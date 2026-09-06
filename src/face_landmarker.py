@@ -2,7 +2,18 @@ import cv2
 import mediapipe as mp
 import time
 
-from landmark_config import LEFT_EYE, RIGHT_EYE, MOUTH
+from landmark_config import (
+    LEFT_EYE_EAR,
+    RIGHT_EYE_EAR,
+    MOUTH_HORIZONTAL,
+    MOUTH_VERTICAL_1,
+    MOUTH_VERTICAL_2
+)
+from feature_extraction import (
+    calculate_average_ear,
+    calculate_mar,
+    BlinkDetector
+)
 
 
 # ============================================================
@@ -53,7 +64,7 @@ def draw_landmarks(frame, face_landmarks):
     # Draw LEFT EYE landmarks in green
     # --------------------------------------------------------
 
-    for index in LEFT_EYE:
+    for index in LEFT_EYE_EAR:
 
         landmark = face_landmarks[index]
 
@@ -72,7 +83,7 @@ def draw_landmarks(frame, face_landmarks):
     # Draw RIGHT EYE landmarks in green
     # --------------------------------------------------------
 
-    for index in RIGHT_EYE:
+    for index in RIGHT_EYE_EAR:
 
         landmark = face_landmarks[index]
 
@@ -91,7 +102,13 @@ def draw_landmarks(frame, face_landmarks):
     # Draw MOUTH landmarks in red
     # --------------------------------------------------------
 
-    for index in MOUTH:
+    mouth_indices = (
+        MOUTH_HORIZONTAL
+        + MOUTH_VERTICAL_1
+        + MOUTH_VERTICAL_2
+    )
+
+    for index in mouth_indices:
 
         landmark = face_landmarks[index]
 
@@ -131,6 +148,10 @@ with FaceLandmarker.create_from_options(options) as landmarker:
     # --------------------------------------------------------
 
     start_time = time.monotonic()
+
+    blink_detector = BlinkDetector(
+        ear_threshold=0.21
+    )
 
     while True:
 
@@ -188,13 +209,36 @@ with FaceLandmarker.create_from_options(options) as landmarker:
 
             face_landmarks = result.face_landmarks[0]
 
+            # Calculate EAR
+            average_ear, left_ear, right_ear = calculate_average_ear(
+                face_landmarks,
+                LEFT_EYE_EAR,
+                RIGHT_EYE_EAR
+            )
+
+            mar = calculate_mar(
+                face_landmarks,
+                MOUTH_HORIZONTAL,
+                MOUTH_VERTICAL_1,
+                MOUTH_VERTICAL_2
+            )
+
+            eye_closed, blink_count, closure_duration, prolonged_closure, blink_rate = (
+                blink_detector.update(
+                    average_ear,
+                    time.monotonic()
+                )
+            )
+
+
+            
             # Draw landmarks
             draw_landmarks(
                 frame,
                 face_landmarks
             )
 
-            # Display status
+            # Display face status
             cv2.putText(
                 frame,
                 "Face detected",
@@ -205,6 +249,96 @@ with FaceLandmarker.create_from_options(options) as landmarker:
                 2
             )
 
+            # Display EAR values
+            cv2.putText(
+                frame,
+                f"EAR: {average_ear: .3f}",
+                (20,80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255,255,255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Left: {left_ear: .3f} Right: {right_ear: .3f}",
+                (20,110),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255,255,255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"MAR: {mar:.3f}",
+                (20, 290),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            # Display blink count
+            cv2.putText(
+                frame,
+                f"Blinks: {blink_count}",
+                (20, 140),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Blink rate: {blink_rate}/min",
+                (20, 260),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            # Display current eye state
+            eye_status = "CLOSED" if eye_closed else "OPEN"
+
+            cv2.putText(
+                frame,
+                f"Eyes: {eye_status}",
+                (20, 170),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Closure: {closure_duration:.2f} s",
+                (20, 200),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            closure_status = (
+                "PROLONGED"
+                if prolonged_closure
+                else "Normal"
+            )
+
+            cv2.putText(
+                frame,
+                f"Closure status: {closure_status}",
+                (20, 230),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255) if prolonged_closure else (255, 255, 255),
+                2
+            )
         # ----------------------------------------------------
         # If no face detected
         # ----------------------------------------------------
