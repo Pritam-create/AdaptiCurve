@@ -150,6 +150,135 @@ def calculate_mar(
 
     return mar
 
+
+
+class FeatureSmoother:
+    """
+    Smooth EAR and MAR values using a moving average.
+    """
+
+    def __init__(self, window_size=5):
+        self.window_size = window_size
+
+        self.ear_values = deque(maxlen=window_size)
+        self.mar_values = deque(maxlen=window_size)
+
+    def update(self, ear, mar):
+        """
+        Add new EAR/MAR values and return their averages.
+        """
+
+        self.ear_values.append(ear)
+        self.mar_values.append(mar)
+
+        smoothed_ear = sum(self.ear_values) / len(self.ear_values)
+        smoothed_mar = sum(self.mar_values) / len(self.mar_values)
+
+        return smoothed_ear, smoothed_mar
+
+    def reset(self):
+        """
+        Clear stored values.
+        """
+        self.ear_values.clear()
+        self.mar_values.clear()
+
+
+
+class YawnDetector:
+    """
+    Detect yawns using MAR and mouth-open duration.
+
+    A yawn is detected when:
+        MAR > threshold
+        continuously for at least the minimum duration.
+    """
+
+    def __init__(
+        self,
+        mar_threshold=0.50,
+        minimum_duration=1.0
+    ):
+        self.mar_threshold = mar_threshold
+        self.minimum_duration = minimum_duration
+
+        # Current mouth state
+        self.mouth_open = False
+
+        # Time when current mouth opening started
+        self.yawn_start_time = None
+
+        # Total number of detected yawns
+        self.yawn_count = 0
+
+        # Prevent counting the same yawn repeatedly
+        self.yawn_already_counted = False
+
+    def update(self, mar, current_time):
+        """
+        Process one MAR value.
+
+        Returns:
+            mouth_open
+            yawn_duration
+            yawn_detected
+            yawn_count
+        """
+
+        # ----------------------------------------------------
+        # Mouth is open
+        # ----------------------------------------------------
+
+        if mar > self.mar_threshold:
+
+            # First frame where mouth becomes open
+            if not self.mouth_open:
+
+                self.mouth_open = True
+                self.yawn_start_time = current_time
+                self.yawn_already_counted = False
+
+            # Calculate how long mouth has remained open
+            yawn_duration = (
+                current_time - self.yawn_start_time
+            )
+
+        # ----------------------------------------------------
+        # Mouth is closed
+        # ----------------------------------------------------
+
+        else:
+
+            self.mouth_open = False
+            self.yawn_start_time = None
+            self.yawn_already_counted = False
+
+            yawn_duration = 0.0
+
+        # ----------------------------------------------------
+        # Check whether this opening lasted long enough
+        # ----------------------------------------------------
+
+        yawn_detected = False
+
+        if (
+            self.mouth_open
+            and yawn_duration >= self.minimum_duration
+            and not self.yawn_already_counted
+        ):
+
+            self.yawn_count += 1
+            yawn_detected = True
+            self.yawn_already_counted = True
+
+        return (
+            self.mouth_open,
+            yawn_duration,
+            yawn_detected,
+            self.yawn_count
+        )
+
+
 class BlinkDetector:
     """
     Detect blinks and measure continuous eye-closure duration.
@@ -275,3 +404,30 @@ class BlinkDetector:
             prolonged_closure,
             blink_rate
         )
+
+
+def calculate_head_pose(face_landmarks):
+    """
+    Estimate coarse horizontal head pose using facial landmarks.
+
+    Returns:
+        "LEFT", "CENTER", or "RIGHT"
+    """
+
+    nose = face_landmarks[1]
+    left_cheek = face_landmarks[234]
+    right_cheek = face_landmarks[454]
+
+    face_width = right_cheek.x - left_cheek.x
+
+    if face_width == 0:
+        return "CENTER"
+
+    nose_position = (nose.x - left_cheek.x) / face_width
+
+    if nose_position < 0.40:
+        return "RIGHT"
+    elif nose_position > 0.60:
+        return "LEFT"
+    else:
+        return "CENTER"

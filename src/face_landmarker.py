@@ -12,7 +12,10 @@ from landmark_config import (
 from feature_extraction import (
     calculate_average_ear,
     calculate_mar,
-    BlinkDetector
+    BlinkDetector,
+    YawnDetector,
+    FeatureSmoother,
+    calculate_head_pose
 )
 
 
@@ -153,6 +156,16 @@ with FaceLandmarker.create_from_options(options) as landmarker:
         ear_threshold=0.21
     )
 
+    yawn_detector = YawnDetector(
+        mar_threshold=0.50,
+        minimum_duration=1.0
+    )
+
+
+    smoother = FeatureSmoother(
+        window_size=5
+    )
+
     while True:
 
         # ----------------------------------------------------
@@ -209,6 +222,8 @@ with FaceLandmarker.create_from_options(options) as landmarker:
 
             face_landmarks = result.face_landmarks[0]
 
+            head_pose = calculate_head_pose(face_landmarks)
+
             # Calculate EAR
             average_ear, left_ear, right_ear = calculate_average_ear(
                 face_landmarks,
@@ -216,11 +231,19 @@ with FaceLandmarker.create_from_options(options) as landmarker:
                 RIGHT_EYE_EAR
             )
 
+
+            
             mar = calculate_mar(
                 face_landmarks,
                 MOUTH_HORIZONTAL,
                 MOUTH_VERTICAL_1,
                 MOUTH_VERTICAL_2
+            )
+
+            # Smooth EAR and MAR
+            average_ear, mar = smoother.update(
+                average_ear,
+                mar
             )
 
             eye_closed, blink_count, closure_duration, prolonged_closure, blink_rate = (
@@ -230,6 +253,12 @@ with FaceLandmarker.create_from_options(options) as landmarker:
                 )
             )
 
+            mouth_open, yawn_duration, yawn_detected, yawn_count = (
+                yawn_detector.update(
+                    mar,
+                    time.monotonic()
+                )
+            )
 
             
             # Draw landmarks
@@ -293,6 +322,16 @@ with FaceLandmarker.create_from_options(options) as landmarker:
 
             cv2.putText(
                 frame,
+                f"Head pose: {head_pose}",
+                (20, 410),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
                 f"Blink rate: {blink_rate}/min",
                 (20, 260),
                 cv2.FONT_HERSHEY_SIMPLEX,
@@ -339,11 +378,45 @@ with FaceLandmarker.create_from_options(options) as landmarker:
                 (0, 0, 255) if prolonged_closure else (255, 255, 255),
                 2
             )
+
+            cv2.putText(
+                frame,
+                f"Yawn duration: {yawn_duration:.2f} s",
+                (20, 320),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            cv2.putText(
+                frame,
+                f"Yawns: {yawn_count}",
+                (20, 350),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            mouth_status = "OPEN" if mouth_open else "CLOSED"
+
+            cv2.putText(
+                frame,
+                f"Mouth: {mouth_status}",
+                (20, 380),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255) if mouth_open else (255, 255, 255),
+                2
+            )
         # ----------------------------------------------------
         # If no face detected
         # ----------------------------------------------------
 
         else:
+
+            smoother.reset()
 
             cv2.putText(
                 frame,
