@@ -1,5 +1,8 @@
 import math
 from collections import deque
+from dataclasses import dataclass
+
+
 
 def euclidean_distance(point1, point2):
     """
@@ -317,6 +320,9 @@ class BlinkDetector:
         # Rolling window = 60 seconds
         self.blink_rate_window = 60.0
 
+        self.last_blink_completed = False
+        self.last_blink_duration = 0.0
+
     def update(self, ear, current_time):
         """
         Process one EAR measurement.
@@ -334,6 +340,9 @@ class BlinkDetector:
             closure_duration
             prolonged_closure
         """
+
+        self.last_blink_completed = False
+        self.last_blink_duration = 0.0
 
         # ----------------------------------------------------
         # CASE 1: Eyes are closed
@@ -368,6 +377,12 @@ class BlinkDetector:
 
                 # Record when this blink happened
                 self.blink_timestamps.append(current_time)
+
+                # Record the completed blink event
+                self.last_blink_completed = True
+                self.last_blink_duration = (
+                    current_time - self.closure_start_time
+                )
 
             self.eye_closed = False
 
@@ -431,3 +446,214 @@ def calculate_head_pose(face_landmarks):
         return "LEFT"
     else:
         return "CENTER"
+
+
+
+
+
+
+class PERCLOS:
+    """
+    Calculate rolling PERCLOS (Percentage of Eyelid Closure Over time).
+
+    PERCLOS represents the percentage of processed frames in the
+    rolling window where the eyes were classified as closed.
+    """
+
+    def __init__(self, window_seconds=60.0, minimum_frames=30):
+        self.window_seconds = window_seconds
+        self.minimum_frames = minimum_frames
+
+        # Stores (timestamp, eye_closed)
+        self.history = deque()
+
+    def update(self, eye_closed, current_time):
+        """
+        Add the current eye state and calculate rolling PERCLOS.
+
+        Returns:
+            perclos: PERCLOS percentage
+            warming_up: True if there is not enough data yet
+        """
+
+
+        # Add current observation
+        self.history.append(
+            (current_time, eye_closed)
+        )
+
+        # Remove observations older than the rolling window
+        cutoff_time = current_time - self.window_seconds
+
+        while self.history and self.history[0][0] < cutoff_time:
+            self.history.popleft()
+
+        # Not enough data yet
+        if len(self.history) < self.minimum_frames:
+            return 0.0, True
+
+        # Count closed-eye frames
+        closed_frames = sum(
+            1 for _, is_closed in self.history
+            if is_closed
+        )
+
+        # Calculate PERCLOS
+        perclos = (
+            closed_frames / len(self.history)
+        ) * 100.0
+
+        return perclos, False
+
+    def reset(self):
+        """Clear the rolling PERCLOS history."""
+        self.history.clear()
+
+
+
+
+@dataclass
+class EpochSummary:
+    """
+    Summary statistics for one completed epoch.
+    Basically final result of one epoch.
+    """
+
+    start_time: float
+    end_time: float
+
+    mean_perclos: float
+    mean_blink_rate: float
+    mean_blink_duration: float
+    yawn_count: int
+    mean_open_eye_ear: float
+    head_pose_deviation_pct: float
+
+
+
+class EpochAccumulator:
+    """
+    Accumulate frame-level features during one epoch.
+    """
+
+    def __init__(self, start_time, centered_head_poses=("CENTER",)):
+        self.start_time = start_time
+        self.centered_head_poses = centered_head_poses
+
+        # PERCLOS
+        self.perclos_sum = 0.0
+        self.perclos_count = 0
+
+        # Blinks
+        self.blink_count = 0
+        self.blink_durations = []
+
+        # Yawns
+        self.yawn_count = 0
+
+        # Open-eye EAR
+        self.open_eye_ear_sum = 0.0
+        self.open_eye_ear_count = 0
+
+        # Head pose
+        self.deviated_frames = 0
+        self.total_frames = 0
+
+    def update(
+        self,
+        perclos,
+        eye_closed,
+        ear,
+        head_pose,
+        blink_completed=False,
+        blink_duration=0.0,
+        yawn_detected=False
+    ):
+        """
+        Add one frame's feature values to the current epoch.
+        """
+
+        # PERCLOS
+        self.perclos_sum += perclos
+        self.perclos_count += 1
+
+        # Blink event
+        if blink_completed:
+            self.blink_count += 1
+            self.blink_durations.append(blink_duration)
+
+        # Yawn event
+        if yawn_detected:
+            self.yawn_count += 1
+
+        # Open-eye EAR
+        if not eye_closed:
+            self.open_eye_ear_sum += ear
+            self.open_eye_ear_count += 1
+
+        # Head pose
+        self.total_frames += 1
+
+        if head_pose not in self.centered_head_poses:
+            self.deviated_frames += 1
+
+    def finalize(self, end_time):
+        """
+        Create an EpochSummary from the accumulated values.
+        """
+
+        duration = end_time - self.start_time
+
+        # Mean PERCLOS
+        if self.perclos_count > 0:
+            mean_perclos = (
+                self.perclos_sum / self.perclos_count
+            )
+        else:
+            mean_perclos = 0.0
+
+        # Blink rate per minute
+        if duration > 0:
+            mean_blink_rate = (
+                self.blink_count / duration
+            ) * 60.0
+        else:
+            mean_blink_rate = 0.0
+
+        # Mean blink duration
+        if self.blink_durations:
+            mean_blink_duration = (
+                sum(self.blink_durations)
+                / len(self.blink_durations)
+            )
+        else:
+            mean_blink_duration = 0.0
+
+        # Mean open-eye EAR
+        if self.open_eye_ear_count > 0:
+            mean_open_eye_ear = (
+                self.open_eye_ear_sum
+                / self.open_eye_ear_count
+            )
+        else:
+            mean_open_eye_ear = 0.0
+
+        # Head pose deviation percentage
+        if self.total_frames > 0:
+            head_pose_deviation_pct = (
+                self.deviated_frames
+                / self.total_frames
+            ) * 100.0
+        else:
+            head_pose_deviation_pct = 0.0
+
+        return EpochSummary(
+            start_time=self.start_time,
+            end_time=end_time,
+            mean_perclos=mean_perclos,
+            mean_blink_rate=mean_blink_rate,
+            mean_blink_duration=mean_blink_duration,
+            yawn_count=self.yawn_count,
+            mean_open_eye_ear=mean_open_eye_ear,
+            head_pose_deviation_pct=head_pose_deviation_pct
+        )

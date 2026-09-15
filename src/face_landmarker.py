@@ -7,15 +7,22 @@ from landmark_config import (
     RIGHT_EYE_EAR,
     MOUTH_HORIZONTAL,
     MOUTH_VERTICAL_1,
-    MOUTH_VERTICAL_2
+    MOUTH_VERTICAL_2,
+    PERCLOS_WINDOW_SECONDS,
+    EPOCH_DURATION_SECONDS,
+    CENTERED_HEAD_POSES
 )
+
+
 from feature_extraction import (
     calculate_average_ear,
     calculate_mar,
     BlinkDetector,
     YawnDetector,
     FeatureSmoother,
-    calculate_head_pose
+    calculate_head_pose,
+    PERCLOS,
+    EpochAccumulator
 )
 
 
@@ -127,6 +134,25 @@ def draw_landmarks(frame, face_landmarks):
         )
 
 
+def print_epoch_summary(summary):
+    """Print the completed epoch's actual aggregate values."""
+
+    print("=" * 60)
+    print("Epoch completed")
+    print(f"Start: {summary.start_time:.2f}")
+    print(f"End: {summary.end_time:.2f}")
+    print(f"Mean PERCLOS: {summary.mean_perclos:.2f} %")
+    print(f"Mean blink rate: {summary.mean_blink_rate:.2f} /min")
+    print(f"Mean blink duration: {summary.mean_blink_duration:.2f} s")
+    print(f"Yawn count: {summary.yawn_count}")
+    print(f"Mean open-eye EAR: {summary.mean_open_eye_ear:.3f}")
+    print(
+        "Head pose deviation: "
+        f"{summary.head_pose_deviation_pct:.2f} %"
+    )
+    print("=" * 60)
+
+
 # ============================================================
 # 3. Start MediaPipe Face Landmarker
 # ============================================================
@@ -151,6 +177,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
     # --------------------------------------------------------
 
     start_time = time.monotonic()
+    last_frame_timestamp_ms = -1
 
     blink_detector = BlinkDetector(
         ear_threshold=0.21
@@ -165,6 +192,16 @@ with FaceLandmarker.create_from_options(options) as landmarker:
     smoother = FeatureSmoother(
         window_size=5
     )
+
+    perclos_tracker = PERCLOS(
+        window_seconds=PERCLOS_WINDOW_SECONDS
+    )
+
+    epoch_accumulator = EpochAccumulator(
+        start_time=start_time,
+        centered_head_poses=CENTERED_HEAD_POSES
+    )
+    epoch_summaries = []
 
     while True:
 
@@ -204,6 +241,31 @@ with FaceLandmarker.create_from_options(options) as landmarker:
         frame_timestamp_ms = int(
             (time.monotonic() - start_time) * 1000
         )
+        frame_timestamp_ms = max(
+            frame_timestamp_ms,
+            last_frame_timestamp_ms + 1
+        )
+        last_frame_timestamp_ms = frame_timestamp_ms
+
+        current_time = time.monotonic()
+
+        # Complete epochs from real elapsed time before assigning this
+        # frame's face measurements to the active epoch.
+        while (
+            current_time - epoch_accumulator.start_time
+            >= EPOCH_DURATION_SECONDS
+        ):
+            epoch_end_time = (
+                epoch_accumulator.start_time
+                + EPOCH_DURATION_SECONDS
+            )
+            summary = epoch_accumulator.finalize(epoch_end_time)
+            epoch_summaries.append(summary)
+            print_epoch_summary(summary)
+            epoch_accumulator = EpochAccumulator(
+                start_time=epoch_end_time,
+                centered_head_poses=CENTERED_HEAD_POSES
+            )
 
         # ----------------------------------------------------
         # Detect face landmarks
@@ -249,15 +311,30 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             eye_closed, blink_count, closure_duration, prolonged_closure, blink_rate = (
                 blink_detector.update(
                     average_ear,
-                    time.monotonic()
+                    current_time
                 )
+            )
+
+            perclos, perclos_warming_up = perclos_tracker.update(
+                eye_closed,
+                current_time
             )
 
             mouth_open, yawn_duration, yawn_detected, yawn_count = (
                 yawn_detector.update(
                     mar,
-                    time.monotonic()
+                    current_time
                 )
+            )
+
+            epoch_accumulator.update(
+                perclos=perclos,
+                eye_closed=eye_closed,
+                ear=average_ear,
+                head_pose=head_pose,
+                blink_completed=blink_detector.last_blink_completed,
+                blink_duration=blink_detector.last_blink_duration,
+                yawn_detected=yawn_detected
             )
 
             
@@ -302,7 +379,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             cv2.putText(
                 frame,
                 f"MAR: {mar:.3f}",
-                (20, 290),
+                (20, 320),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -323,7 +400,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             cv2.putText(
                 frame,
                 f"Head pose: {head_pose}",
-                (20, 410),
+                (20, 440),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -334,6 +411,21 @@ with FaceLandmarker.create_from_options(options) as landmarker:
                 frame,
                 f"Blink rate: {blink_rate}/min",
                 (20, 260),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2
+            )
+
+            if perclos_warming_up:
+                perclos_text = "PERCLOS: Warming up"
+            else:
+                perclos_text = f"PERCLOS: {perclos:.1f}%"
+
+            cv2.putText(
+                frame,
+                perclos_text,
+                (20, 290),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -382,7 +474,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             cv2.putText(
                 frame,
                 f"Yawn duration: {yawn_duration:.2f} s",
-                (20, 320),
+                (20, 350),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -392,7 +484,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             cv2.putText(
                 frame,
                 f"Yawns: {yawn_count}",
-                (20, 350),
+                (20, 380),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (255, 255, 255),
@@ -404,7 +496,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
             cv2.putText(
                 frame,
                 f"Mouth: {mouth_status}",
-                (20, 380),
+                (20, 420),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (0, 0, 255) if mouth_open else (255, 255, 255),
@@ -417,6 +509,7 @@ with FaceLandmarker.create_from_options(options) as landmarker:
         else:
 
             smoother.reset()
+            perclos_tracker.reset()
 
             cv2.putText(
                 frame,
